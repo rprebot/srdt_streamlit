@@ -186,6 +186,17 @@ if result is not None:
                 st.text(data.get("debug", {}).get("systemPrompt", "—"))
 
         with col_sources:
+            # Synchronise feedback_state avec les clics de ce run avant tout affichage,
+            # sinon badges et barre de progression restent un cran en retard sur le clic.
+            for i, (url, score) in enumerate(sources):
+                fb_key = f"fb_{query_id}_{i}"
+                choice = st.session_state.get(fb_key)
+                if choice is not None:
+                    adapted = choice == 1
+                    if feedback_state.get(fb_key) != adapted:
+                        feedback_state[fb_key] = adapted
+                        save_feedback({**ctx, "url": url, "score": score, "adapted": adapted})
+
             st.markdown(f"#### Sources ({len(sources)})")
 
             if not sources:
@@ -218,9 +229,4 @@ if result is not None:
                         unsafe_allow_html=True,
                     )
                     st.markdown("<div class='source-feedback-hint'>Cette source est-elle pertinente ?</div>", unsafe_allow_html=True)
-                    choice = st.feedback("thumbs", key=fb_key)
-                    if choice is not None:
-                        adapted = choice == 1
-                        if feedback_state.get(fb_key) != adapted:
-                            feedback_state[fb_key] = adapted
-                            save_feedback({**ctx, "url": url, "score": score, "adapted": adapted})
+                    st.feedback("thumbs", key=fb_key)
