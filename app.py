@@ -8,13 +8,16 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import gspread
 import requests
 import streamlit as st
+from google.oauth2.service_account import Credentials
 
 ENDPOINT = "/api/generate"
 FEEDBACK_FILE = Path(__file__).parent / "feedback.jsonl"
 ENV = "preprod"
 SOURCE_URL_PREFIX = "https://www.legifrance.gouv.fr/conv_coll"
+SHEET_HEADERS = ["receivedAt", "question", "agreementId", "url", "score", "adapted"]
 
 st.set_page_config(page_title="SRDT — Testeur", page_icon="⚖️", layout="wide")
 
@@ -86,10 +89,31 @@ def call_api(question: str, agreement_id: str | None) -> dict:
     return resp.json()
 
 
+@st.cache_resource
+def get_worksheet():
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(st.secrets["SHEET_ID"]).sheet1
+    if sheet.row_values(1) != SHEET_HEADERS:
+        sheet.update(range_name="A1", values=[SHEET_HEADERS])
+    return sheet
+
+
 def save_feedback(entry: dict) -> None:
     record = {"receivedAt": datetime.now(timezone.utc).isoformat(), **entry}
     with FEEDBACK_FILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    try:
+        ws = get_worksheet()
+        ws.append_row(
+            [str(record.get(k, "")) for k in SHEET_HEADERS],
+            value_input_option="USER_ENTERED",
+        )
+    except Exception as e:
+        st.toast(f"⚠️ Écriture Google Sheet impossible : {e}", icon="⚠️")
 
 
 # --- Formulaire ---
