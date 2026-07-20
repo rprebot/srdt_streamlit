@@ -51,7 +51,7 @@ st.markdown(
       }
       .source-status-pending { background: #f3f4f6; color: #6b7280; }
       .source-status-ok { background: #d4edda; color: #155724; }
-      .source-status-ko { background: #fff3cd; color: #856404; }
+      .source-status-ko { background: #f8d7da; color: #721c24; }
       .source-link {
         font-size: 0.85rem; word-break: break-all; line-height: 1.4;
       }
