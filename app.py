@@ -116,14 +116,6 @@ def save_feedback(entry: dict) -> None:
         st.toast(f"⚠️ Écriture Google Sheet impossible : {e}", icon="⚠️")
 
 
-# --- Nouvelle conversation ---
-if st.session_state.get("result") is not None:
-    if st.button("🔄 Nouvelle conversation"):
-        for k in list(st.session_state.keys()):
-            if k in ("result", "query_id", "query_ctx", "feedback_given", "question_input", "agreement_input") or k.startswith("fb_"):
-                del st.session_state[k]
-        st.rerun()
-
 # --- Formulaire ---
 with st.form("query_form"):
     question = st.text_area(
@@ -152,6 +144,14 @@ if submitted:
             "question": question.strip(),
             "agreementId": agreement_id.strip() or None,
         }
+
+# --- Nouvelle conversation ---
+if st.session_state.get("result") is not None:
+    if st.button("🔄 Nouvelle conversation"):
+        for k in list(st.session_state.keys()):
+            if k in ("result", "query_id", "query_ctx", "feedback_given", "question_input", "agreement_input") or k.startswith("fb_"):
+                del st.session_state[k]
+        st.rerun()
 
 # --- Résultats ---
 result = st.session_state.get("result")
