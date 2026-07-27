@@ -1,0 +1,15 @@
+name: Keep Streamlit app awake
+
+on:
+  schedule:
+    # Toutes les 6 heures (le seuil de mise en veille de Streamlit Community
+    # Cloud est bien plus court que cet intervalle si aucune visite n'a lieu)
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping app URL
+        run: curl -sS -o /dev/null -w "HTTP %{http_code}\n" -L "https://srdt-streamlit.streamlit.app"

@@ -14,10 +14,15 @@ import streamlit as st
 from google.oauth2.service_account import Credentials
 
 ENDPOINT = "/api/generate"
+SEARCH_ENDPOINT = "/api/v1/search"
 FEEDBACK_FILE = Path(__file__).parent / "feedback.jsonl"
 ENV = "preprod"
 SOURCE_URL_PREFIX = "https://www.legifrance.gouv.fr/conv_coll"
-SHEET_HEADERS = ["receivedAt", "question", "agreementId", "url", "score", "adapted"]
+SOURCE_TYPE_CONV_COLL = "conv_coll"
+SOURCE_TYPE_JURISPRUDENCE = "judilibre"
+JURISPRUDENCE_TOP_K = 10
+JURISPRUDENCE_TOP_N = 3
+SHEET_HEADERS = ["receivedAt", "question", "agreementId", "sourceType", "url", "score", "adapted"]
 
 st.set_page_config(page_title="SRDT — Testeur", page_icon="⚖️", layout="wide")
 
@@ -55,6 +60,9 @@ st.markdown(
       .source-link {
         font-size: 0.85rem; word-break: break-all; line-height: 1.4;
       }
+      .source-label {
+        font-size: 0.78rem; color: #374151; margin-bottom: 4px; line-height: 1.3;
+      }
       .source-feedback-hint {
         font-size: 0.75rem; color: #6b7280; margin: 8px 0 2px;
       }
@@ -89,6 +97,30 @@ def call_api(question: str, agreement_id: str | None) -> dict:
     return resp.json()
 
 
+def get_search_config(env: str) -> dict:
+    return {
+        "url": st.secrets[f"SEARCH_URL_{env.upper()}"].rstrip("/"),
+        "token": st.secrets[f"SEARCH_TOKEN_{env.upper()}"],
+    }
+
+
+def call_jurisprudence_api(question: str) -> list[dict]:
+    cfg = get_search_config(ENV)
+    payload = {
+        "prompts": [question],
+        "options": {"collections": ["judilibre"], "hybrid": True, "top_K": JURISPRUDENCE_TOP_K},
+    }
+    resp = requests.post(
+        cfg["url"] + SEARCH_ENDPOINT,
+        json=payload,
+        headers={"Authorization": f"Bearer {cfg['token']}"},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    chunks = resp.json().get("top_chunks", [])
+    return sorted(chunks, key=lambda c: c.get("score") or 0, reverse=True)[:JURISPRUDENCE_TOP_N]
+
+
 @st.cache_resource
 def get_worksheet():
     creds = Credentials.from_service_account_info(
@@ -116,6 +148,62 @@ def save_feedback(entry: dict) -> None:
         st.toast(f"⚠️ Écriture Google Sheet impossible : {e}", icon="⚠️")
 
 
+def render_source_list(
+    items: list[tuple[str, float | None, str | None]],
+    *,
+    key_prefix: str,
+    source_type: str,
+    title: str,
+    empty_caption: str,
+    ctx: dict,
+    query_id: str,
+    feedback_state: dict,
+) -> None:
+    # Synchronise feedback_state avec les clics de ce run avant tout affichage,
+    # sinon badges et barre de progression restent un cran en retard sur le clic.
+    for i, (url, score, _label) in enumerate(items):
+        fb_key = f"{key_prefix}_{query_id}_{i}"
+        choice = st.session_state.get(fb_key)
+        if choice is not None:
+            adapted = choice == 1
+            if feedback_state.get(fb_key) != adapted:
+                feedback_state[fb_key] = adapted
+                save_feedback({**ctx, "sourceType": source_type, "url": url, "score": score, "adapted": adapted})
+
+    st.markdown(f"#### {title} ({len(items)})")
+
+    if not items:
+        st.caption(empty_caption)
+    else:
+        fb_keys = [f"{key_prefix}_{query_id}_{i}" for i in range(len(items))]
+        answered = sum(1 for k in fb_keys if k in feedback_state)
+        st.progress(answered / len(items), text=f"{answered}/{len(items)} sources notées")
+
+    for i, (url, score, label) in enumerate(items):
+        safe_url = html.escape(url, quote=True)
+        fb_key = f"{key_prefix}_{query_id}_{i}"
+        status = feedback_state.get(fb_key)
+        if status is None:
+            status_html = "<span class='source-status source-status-pending'>À noter</span>"
+        elif status:
+            status_html = "<span class='source-status source-status-ok'>👍 Pertinente</span>"
+        else:
+            status_html = "<span class='source-status source-status-ko'>👎 Non pertinente</span>"
+
+        with st.container(border=True):
+            label_html = f"<div class='source-label'>{html.escape(label)}</div>" if label else ""
+            st.markdown(
+                f"<div class='source-card-head'>"
+                f"<span class='source-index'>Source {i + 1}</span>{status_html}"
+                f"</div>"
+                f"{label_html}"
+                f"<a class='source-link' href='{safe_url}' target='_blank'>↗ {safe_url}</a>",
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div class='source-feedback-hint'>Cette source est-elle pertinente ?</div>", unsafe_allow_html=True)
+            st.feedback("thumbs", key=fb_key)
+
+
 # --- Formulaire ---
 with st.form("query_form"):
     question = st.text_area(
@@ -138,7 +226,15 @@ if submitted:
             except requests.RequestException as e:
                 result = {"success": False, "error": str(e)}
 
+            jurisprudence: list[dict] = []
+            if result.get("success"):
+                try:
+                    jurisprudence = call_jurisprudence_api(question.strip())
+                except requests.RequestException as e:
+                    st.toast(f"⚠️ Recherche de jurisprudence impossible : {e}", icon="⚠️")
+
         st.session_state["result"] = result
+        st.session_state["jurisprudence"] = jurisprudence
         st.session_state["query_id"] = uuid.uuid4().hex
         st.session_state["query_ctx"] = {
             "question": question.strip(),
@@ -149,7 +245,7 @@ if submitted:
 if st.session_state.get("result") is not None:
     if st.button("🔄 Nouvelle conversation"):
         for k in list(st.session_state.keys()):
-            if k in ("result", "query_id", "query_ctx", "feedback_given", "question_input", "agreement_input") or k.startswith("fb_"):
+            if k in ("result", "jurisprudence", "query_id", "query_ctx", "feedback_given", "question_input", "agreement_input") or k.startswith("fb_") or k.startswith("fbj_"):
                 del st.session_state[k]
         st.rerun()
 
@@ -175,10 +271,23 @@ if result is not None:
             if url not in by_url or (score is not None and (by_url[url] is None or score > by_url[url])):
                 by_url[url] = score
         sources = sorted(by_url.items(), key=lambda kv: (kv[1] if kv[1] is not None else 0), reverse=True)
+        source_items = [(url, score, None) for url, score in sources]
+
+        # Jurisprudence (top 3 décisions Judilibre les mieux notées, cf. call_jurisprudence_api)
+        jurisprudence_items: list[tuple[str, float | None, str | None]] = []
+        for c in st.session_state.get("jurisprudence", []):
+            meta = c.get("metadata", {})
+            url = meta.get("url")
+            if not url:
+                continue
+            label = meta.get("title")
+            if label and len(label) > 140:
+                label = label[:137] + "…"
+            jurisprudence_items.append((url, c.get("score"), label))
 
         feedback_state = st.session_state.setdefault("feedback_given", {})
 
-        col_main, col_sources = st.columns([2, 1], gap="large")
+        col_main, col_sources, col_juris = st.columns([2, 1, 1], gap="large")
 
         with col_main:
             st.markdown(
@@ -196,47 +305,25 @@ if result is not None:
                 st.text(data.get("debug", {}).get("systemPrompt", "—"))
 
         with col_sources:
-            # Synchronise feedback_state avec les clics de ce run avant tout affichage,
-            # sinon badges et barre de progression restent un cran en retard sur le clic.
-            for i, (url, score) in enumerate(sources):
-                fb_key = f"fb_{query_id}_{i}"
-                choice = st.session_state.get(fb_key)
-                if choice is not None:
-                    adapted = choice == 1
-                    if feedback_state.get(fb_key) != adapted:
-                        feedback_state[fb_key] = adapted
-                        save_feedback({**ctx, "url": url, "score": score, "adapted": adapted})
+            render_source_list(
+                source_items,
+                key_prefix="fb",
+                source_type=SOURCE_TYPE_CONV_COLL,
+                title="Sources",
+                empty_caption="Aucune source Légifrance trouvée.",
+                ctx=ctx,
+                query_id=query_id,
+                feedback_state=feedback_state,
+            )
 
-            st.markdown(f"#### Sources ({len(sources)})")
-
-            if not sources:
-                st.caption("Aucune source Légifrance trouvée.")
-            else:
-                fb_keys = [f"fb_{query_id}_{i}" for i in range(len(sources))]
-                answered = sum(1 for k in fb_keys if k in feedback_state)
-                st.progress(
-                    answered / len(sources),
-                    text=f"{answered}/{len(sources)} sources notées",
-                )
-
-            for i, (url, score) in enumerate(sources):
-                safe_url = html.escape(url, quote=True)
-                fb_key = f"fb_{query_id}_{i}"
-                status = feedback_state.get(fb_key)
-                if status is None:
-                    status_html = "<span class='source-status source-status-pending'>À noter</span>"
-                elif status:
-                    status_html = "<span class='source-status source-status-ok'>👍 Pertinente</span>"
-                else:
-                    status_html = "<span class='source-status source-status-ko'>👎 Non pertinente</span>"
-
-                with st.container(border=True):
-                    st.markdown(
-                        f"<div class='source-card-head'>"
-                        f"<span class='source-index'>Source {i + 1}</span>{status_html}"
-                        f"</div>"
-                        f"<a class='source-link' href='{safe_url}' target='_blank'>↗ {safe_url}</a>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown("<div class='source-feedback-hint'>Cette source est-elle pertinente ?</div>", unsafe_allow_html=True)
-                    st.feedback("thumbs", key=fb_key)
+        with col_juris:
+            render_source_list(
+                jurisprudence_items,
+                key_prefix="fbj",
+                source_type=SOURCE_TYPE_JURISPRUDENCE,
+                title="Jurisprudence",
+                empty_caption="Aucune décision de jurisprudence trouvée.",
+                ctx=ctx,
+                query_id=query_id,
+                feedback_state=feedback_state,
+            )
