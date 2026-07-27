@@ -24,7 +24,7 @@ SOURCE_URL_PREFIX = "https://www.legifrance.gouv.fr/conv_coll"
 SOURCE_TYPE_CONV_COLL = "conv_coll"
 SOURCE_TYPE_JURISPRUDENCE = "judilibre"
 JURISPRUDENCE_SEARCH_TOP_K = 50
-JURISPRUDENCE_TOP_N = 3
+JURISPRUDENCE_TOP_N = 5
 SHEET_HEADERS = ["receivedAt", "question", "agreementId", "sourceType", "url", "score", "adapted"]
 
 st.set_page_config(page_title="SRDT — Testeur", page_icon="⚖️", layout="wide")
