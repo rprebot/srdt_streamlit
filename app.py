@@ -15,12 +15,15 @@ from google.oauth2.service_account import Credentials
 
 ENDPOINT = "/api/generate"
 SEARCH_ENDPOINT = "/api/v1/search"
+ALBERT_URL = "https://albert.api.etalab.gouv.fr/v1"
+ALBERT_RERANK_ENDPOINT = "/rerank"
+ALBERT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 FEEDBACK_FILE = Path(__file__).parent / "feedback.jsonl"
 ENV = "preprod"
 SOURCE_URL_PREFIX = "https://www.legifrance.gouv.fr/conv_coll"
 SOURCE_TYPE_CONV_COLL = "conv_coll"
 SOURCE_TYPE_JURISPRUDENCE = "judilibre"
-JURISPRUDENCE_TOP_K = 10
+JURISPRUDENCE_SEARCH_TOP_K = 50
 JURISPRUDENCE_TOP_N = 3
 SHEET_HEADERS = ["receivedAt", "question", "agreementId", "sourceType", "url", "score", "adapted"]
 
@@ -104,11 +107,22 @@ def get_search_config(env: str) -> dict:
     }
 
 
+def call_rerank_api(query: str, documents: list[str], top_n: int) -> dict:
+    resp = requests.post(
+        ALBERT_URL + ALBERT_RERANK_ENDPOINT,
+        json={"query": query, "documents": documents, "model": ALBERT_RERANK_MODEL, "top_n": top_n},
+        headers={"Authorization": f"Bearer {st.secrets['ALBERT_KEY']}"},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def call_jurisprudence_api(question: str) -> tuple[list[dict], dict]:
     cfg = get_search_config(ENV)
     payload = {
         "prompts": [question],
-        "options": {"collections": ["judilibre"], "hybrid": True, "top_K": JURISPRUDENCE_TOP_K},
+        "options": {"collections": ["judilibre"], "hybrid": True, "top_K": JURISPRUDENCE_SEARCH_TOP_K},
     }
     resp = requests.post(
         cfg["url"] + SEARCH_ENDPOINT,
@@ -117,9 +131,24 @@ def call_jurisprudence_api(question: str) -> tuple[list[dict], dict]:
         timeout=60,
     )
     resp.raise_for_status()
-    body = resp.json()
-    chunks = body.get("top_chunks", [])
-    return sorted(chunks, key=lambda c: c.get("score") or 0, reverse=True)[:JURISPRUDENCE_TOP_N], body
+    search_body = resp.json()
+    chunks = search_body.get("top_chunks", [])
+    if not chunks:
+        return [], {"search": search_body}
+
+    rerank_body = call_rerank_api(question, [c.get("content", "") for c in chunks], JURISPRUDENCE_TOP_N)
+    results = sorted(rerank_body.get("results", []), key=lambda r: r.get("relevance_score") or 0, reverse=True)
+
+    top: list[dict] = []
+    for r in results:
+        idx = r.get("index")
+        if idx is None or not (0 <= idx < len(chunks)):
+            continue
+        chunk = dict(chunks[idx])
+        chunk["score"] = r.get("relevance_score")
+        top.append(chunk)
+
+    return top, {"search": search_body, "rerank": rerank_body}
 
 
 @st.cache_resource
