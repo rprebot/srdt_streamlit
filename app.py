@@ -104,7 +104,7 @@ def get_search_config(env: str) -> dict:
     }
 
 
-def call_jurisprudence_api(question: str) -> list[dict]:
+def call_jurisprudence_api(question: str) -> tuple[list[dict], dict]:
     cfg = get_search_config(ENV)
     payload = {
         "prompts": [question],
@@ -117,8 +117,9 @@ def call_jurisprudence_api(question: str) -> list[dict]:
         timeout=60,
     )
     resp.raise_for_status()
-    chunks = resp.json().get("top_chunks", [])
-    return sorted(chunks, key=lambda c: c.get("score") or 0, reverse=True)[:JURISPRUDENCE_TOP_N]
+    body = resp.json()
+    chunks = body.get("top_chunks", [])
+    return sorted(chunks, key=lambda c: c.get("score") or 0, reverse=True)[:JURISPRUDENCE_TOP_N], body
 
 
 @st.cache_resource
@@ -227,14 +228,17 @@ if submitted:
                 result = {"success": False, "error": str(e)}
 
             jurisprudence: list[dict] = []
+            jurisprudence_debug: dict = {}
             if result.get("success"):
                 try:
-                    jurisprudence = call_jurisprudence_api(question.strip())
+                    jurisprudence, jurisprudence_debug = call_jurisprudence_api(question.strip())
                 except requests.RequestException as e:
                     st.toast(f"⚠️ Recherche de jurisprudence impossible : {e}", icon="⚠️")
+                    jurisprudence_debug = {"error": str(e)}
 
         st.session_state["result"] = result
         st.session_state["jurisprudence"] = jurisprudence
+        st.session_state["jurisprudence_debug"] = jurisprudence_debug
         st.session_state["query_id"] = uuid.uuid4().hex
         st.session_state["query_ctx"] = {
             "question": question.strip(),
@@ -245,7 +249,7 @@ if submitted:
 if st.session_state.get("result") is not None:
     if st.button("🔄 Nouvelle conversation"):
         for k in list(st.session_state.keys()):
-            if k in ("result", "jurisprudence", "query_id", "query_ctx", "feedback_given", "question_input", "agreement_input") or k.startswith("fb_") or k.startswith("fbj_"):
+            if k in ("result", "jurisprudence", "jurisprudence_debug", "query_id", "query_ctx", "feedback_given", "question_input", "agreement_input") or k.startswith("fb_") or k.startswith("fbj_"):
                 del st.session_state[k]
         st.rerun()
 
@@ -327,3 +331,5 @@ if result is not None:
                 query_id=query_id,
                 feedback_state=feedback_state,
             )
+            with st.expander("Voir la réponse brute de recherche"):
+                st.json(st.session_state.get("jurisprudence_debug", {}))
