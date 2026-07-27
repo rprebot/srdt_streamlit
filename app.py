@@ -198,7 +198,7 @@ def render_source_list(
                 f"<span class='source-index'>Source {i + 1}</span>{status_html}"
                 f"</div>"
                 f"{label_html}"
-                f"<a class='source-link' href='{safe_url}' target='_blank'>↗ {safe_url}</a>",
+                f"<a class='source-link' href='{safe_url}' target='_blank'>↗ URL</a>",
                 unsafe_allow_html=True,
             )
             st.markdown("<div class='source-feedback-hint'>Cette source est-elle pertinente ?</div>", unsafe_allow_html=True)
