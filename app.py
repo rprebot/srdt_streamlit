@@ -295,16 +295,19 @@ if result is not None:
 
         # Sources uniques (score conservé uniquement pour le tri, non affiché)
         chunks = data.get("localSearchChunks", [])
-        by_url: dict[str, float | None] = {}
+        by_url: dict[str, tuple[float | None, str | None]] = {}
         for c in chunks:
-            url = c.get("metadata", {}).get("url")
+            meta = c.get("metadata", {})
+            url = meta.get("url")
             if not url or not url.startswith(SOURCE_URL_PREFIX):
                 continue
             score = c.get("score")
-            if url not in by_url or (score is not None and (by_url[url] is None or score > by_url[url])):
-                by_url[url] = score
-        sources = sorted(by_url.items(), key=lambda kv: (kv[1] if kv[1] is not None else 0), reverse=True)
-        source_items = [(url, score, None) for url, score in sources]
+            label = meta.get("title")
+            prev_score = by_url[url][0] if url in by_url else None
+            if url not in by_url or (score is not None and (prev_score is None or score > prev_score)):
+                by_url[url] = (score, label)
+        sources = sorted(by_url.items(), key=lambda kv: (kv[1][0] if kv[1][0] is not None else 0), reverse=True)
+        source_items = [(url, score, label) for url, (score, label) in sources]
 
         # Jurisprudence (top 3 décisions Judilibre les mieux notées, cf. call_jurisprudence_api)
         jurisprudence_items: list[tuple[str, float | None, str | None]] = []
@@ -342,7 +345,7 @@ if result is not None:
                 source_items,
                 key_prefix="fb",
                 source_type=SOURCE_TYPE_CONV_COLL,
-                title="Sources",
+                title="Sources CCs (legifrance)",
                 empty_caption="Aucune source Légifrance trouvée.",
                 ctx=ctx,
                 query_id=query_id,
