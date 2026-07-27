@@ -25,6 +25,7 @@ SOURCE_TYPE_CONV_COLL = "conv_coll"
 SOURCE_TYPE_JURISPRUDENCE = "judilibre"
 JURISPRUDENCE_SEARCH_TOP_K = 50
 JURISPRUDENCE_TOP_N = 5
+JURISPRUDENCE_RERANK_THRESHOLD = 0.6
 SHEET_HEADERS = ["receivedAt", "question", "agreementId", "sourceType", "url", "score", "adapted"]
 
 st.set_page_config(page_title="SRDT — Testeur", page_icon="⚖️", layout="wide")
@@ -141,11 +142,14 @@ def call_jurisprudence_api(question: str) -> tuple[list[dict], dict]:
 
     top: list[dict] = []
     for r in results:
+        score = r.get("relevance_score")
+        if score is None or score < JURISPRUDENCE_RERANK_THRESHOLD:
+            continue
         idx = r.get("index")
         if idx is None or not (0 <= idx < len(chunks)):
             continue
         chunk = dict(chunks[idx])
-        chunk["score"] = r.get("relevance_score")
+        chunk["score"] = score
         top.append(chunk)
 
     return top, {"search": search_body, "rerank": rerank_body}
@@ -345,7 +349,7 @@ if result is not None:
                 source_items,
                 key_prefix="fb",
                 source_type=SOURCE_TYPE_CONV_COLL,
-                title="Sources CCs (legifrance)",
+                title="Sources CC Légifrance",
                 empty_caption="Aucune source Légifrance trouvée.",
                 ctx=ctx,
                 query_id=query_id,
