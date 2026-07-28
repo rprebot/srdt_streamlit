@@ -155,6 +155,27 @@ def call_jurisprudence_api(question: str) -> tuple[list[dict], dict]:
     return top, {"search": search_body, "rerank": rerank_body}
 
 
+def build_augmented_question(question: str, jurisprudence: list[dict]) -> str:
+    if jurisprudence:
+        blocks = []
+        for i, c in enumerate(jurisprudence, start=1):
+            meta = c.get("metadata", {})
+            title = meta.get("title") or f"Décision {i}"
+            url = meta.get("url", "")
+            content = (c.get("content") or "").strip()
+            blocks.append(f"{i}. {title} ({url})\n{content}")
+        jurisprudence_block = "\n\n".join(blocks)
+    else:
+        jurisprudence_block = "Il n'y a pas de jurisprudences pertinentes par rapport à la question de base qui aient été trouvées."
+
+    return (
+        f"{question}\n\n"
+        "---\n"
+        "Jurisprudence :\n\n"
+        f"{jurisprudence_block}"
+    )
+
+
 @st.cache_resource
 def get_worksheet():
     creds = Credentials.from_service_account_info(
@@ -250,28 +271,30 @@ if submitted:
     if not question.strip():
         st.error("Merci de saisir une question.")
     else:
+        with st.spinner("Recherche de jurisprudence…"):
+            jurisprudence: list[dict] = []
+            jurisprudence_debug: dict = {}
+            try:
+                jurisprudence, jurisprudence_debug = call_jurisprudence_api(question.strip())
+            except requests.RequestException as e:
+                st.toast(f"⚠️ Recherche de jurisprudence impossible : {e}", icon="⚠️")
+                jurisprudence_debug = {"error": str(e)}
+
         with st.spinner("Génération de la réponse…"):
             try:
                 t0 = time.time()
-                result = call_api(question.strip(), agreement_id.strip() or None)
+                augmented_question = build_augmented_question(question.strip(), jurisprudence)
+                result = call_api(augmented_question, agreement_id.strip() or None)
                 result["_elapsed"] = time.time() - t0
             except requests.HTTPError as e:
                 result = {"success": False, "error": f"{e.response.status_code} {e.response.reason} — {e.response.text}"}
             except requests.RequestException as e:
                 result = {"success": False, "error": str(e)}
 
-            jurisprudence: list[dict] = []
-            jurisprudence_debug: dict = {}
-            if result.get("success"):
-                try:
-                    jurisprudence, jurisprudence_debug = call_jurisprudence_api(question.strip())
-                except requests.RequestException as e:
-                    st.toast(f"⚠️ Recherche de jurisprudence impossible : {e}", icon="⚠️")
-                    jurisprudence_debug = {"error": str(e)}
-
         st.session_state["result"] = result
         st.session_state["jurisprudence"] = jurisprudence
         st.session_state["jurisprudence_debug"] = jurisprudence_debug
+        st.session_state["augmented_question"] = augmented_question
         st.session_state["query_id"] = uuid.uuid4().hex
         st.session_state["query_ctx"] = {
             "question": question.strip(),
@@ -282,7 +305,7 @@ if submitted:
 if st.session_state.get("result") is not None:
     if st.button("🔄 Nouvelle conversation"):
         for k in list(st.session_state.keys()):
-            if k in ("result", "jurisprudence", "jurisprudence_debug", "query_id", "query_ctx", "feedback_given", "question_input", "agreement_input") or k.startswith("fb_") or k.startswith("fbj_"):
+            if k in ("result", "jurisprudence", "jurisprudence_debug", "augmented_question", "query_id", "query_ctx", "feedback_given", "question_input", "agreement_input") or k.startswith("fb_") or k.startswith("fbj_"):
                 del st.session_state[k]
         st.rerun()
 
@@ -342,7 +365,7 @@ if result is not None:
             st.markdown(gen.get("text") or "_Aucune réponse_")
 
             with st.expander("Voir le prompt système"):
-                st.text(data.get("debug", {}).get("systemPrompt", "—"))
+                st.text(st.session_state.get("augmented_question", "—"))
 
         with col_sources:
             render_source_list(
